@@ -1,0 +1,47 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TaskBoard</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#e8eef7;color:#222}
+header{background:#0f766e;color:#fff;padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}header h1{font-size:20px;margin:0;flex:1;cursor:pointer}
+button{background:#0f766e;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer}button.alt{background:#64748b}header button{background:#fff;color:#0f766e}
+main{max-width:1000px;margin:20px auto;padding:0 12px}.card{background:#fff;border-radius:10px;padding:12px;margin-bottom:10px;box-shadow:0 1px 4px #0002}
+input,textarea,select{padding:8px;border:1px solid #ccc;border-radius:6px;width:100%;margin:4px 0;font:inherit}
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}.col{background:#d5dfee;border-radius:10px;padding:10px}
+.task{cursor:pointer}.err{color:#b91c1c}small{color:#666}.c{padding:3px 0 3px 8px;border-left:3px solid #ddd;margin:4px 0}
+#toast{position:fixed;right:16px;bottom:16px;display:flex;flex-direction:column;gap:8px}#toast div{background:#0f172a;color:#fff;padding:10px 14px;border-radius:8px}
+</style></head><body>
+<header><h1 onclick="show('projects')">📋 TaskBoard</h1><span id="auth"></span></header><main id="app"></main><div id="toast"></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let me=JSON.parse(localStorage.me||'null'),socket,pid=null,openTask=null,members=[];
+async function api(p,m='GET',b){const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json',...(me&&{Authorization:'Bearer '+me.token})},body:b&&JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');return d}
+function toast(t){const d=document.createElement('div');d.textContent='🔔 '+t;$('#toast').append(d);setTimeout(()=>d.remove(),5000)}
+function connect(){if(!me)return;socket=io({auth:{token:me.token}});
+  socket.on('notify',toast);socket.on('board',()=>pid&&loadBoard());socket.on('comment',id=>id===openTask&&loadComments())}
+function renderAuth(){$('#auth').innerHTML=me?`@${esc(me.username)} <button onclick="logout()">Logout</button>`:''}
+function logout(){localStorage.removeItem('me');location.reload()}
+async function login(kind){try{me=await api('/'+kind,'POST',{username:$('#u').value,password:$('#p').value});localStorage.me=JSON.stringify(me);renderAuth();connect();show('projects')}catch(e){$('#msg').textContent=e.message}}
+const run=async f=>{try{await f()}catch(e){alert(e.message)}};
+async function show(v,id){
+  const app=$('#app');pid=null;openTask=null;
+  if(!me){app.innerHTML=`<div class="card" style="max-width:340px;margin:auto"><h2>Account</h2><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password (6+ chars)"><button onclick="login('login')">Login</button> <button class="alt" onclick="login('register')">Register</button><p id="msg" class="err"></p></div>`;return}
+  if(v==='projects'){const ps=await api('/projects');
+    app.innerHTML=`<div class="card"><input id="pn" placeholder="New project name"><button onclick="run(async()=>{await api('/projects','POST',{name:$('#pn').value});show('projects')})">Create project</button></div>`+ps.map(p=>`<div class="card task" onclick="show('board',${p.id})"><b>${esc(p.name)}</b></div>`).join('')}
+  else if(v==='board'){pid=id;socket.emit('watch',id);app.innerHTML='<div id="bd"></div>';loadBoard()}
+}
+async function loadBoard(){
+  const d=await api('/projects/'+pid);members=d.members.map(m=>m.username);
+  const col=(s,l)=>`<div class="col"><h3>${l}</h3>${d.tasks.filter(t=>t.status===s).map(t=>`<div class="card task" onclick="showTask(${t.id},'${esc(t.title).replace(/'/g,'')}')"><b>${esc(t.title)}</b><br><small>${esc(t.description)}</small><br><small>👤 ${esc(t.assignee||'unassigned')}</small><br>
+    ${['todo','doing','done'].filter(x=>x!==s).map(x=>`<button class="alt" onclick="event.stopPropagation();run(()=>api('/tasks/${t.id}','PATCH',{status:'${x}'}))">→ ${x}</button>`).join(' ')}</div>`).join('')}</div>`;
+  $('#bd').innerHTML=`<button class="alt" onclick="show('projects')">← Projects</button> <h2 style="display:inline">${esc(d.project.name)}</h2>
+  <div class="card"><b>Members:</b> ${members.map(esc).join(', ')}<br><input id="mn" placeholder="Add member by username" style="width:60%"> <button onclick="run(async()=>{await api('/projects/${pid}/members','POST',{username:$('#mn').value})})">Add</button></div>
+  <div class="card"><input id="tt" placeholder="Task title"><input id="td" placeholder="Description"><select id="ta"><option value="">Unassigned</option>${members.map(m=>`<option>${esc(m)}</option>`).join('')}</select>
+  <button onclick="run(async()=>{await api('/projects/${pid}/tasks','POST',{title:$('#tt').value,description:$('#td').value,assignee:$('#ta').value})})">Add task</button></div>
+  <div class="cols">${col('todo','📝 To do')}${col('doing','🚧 In progress')}${col('done','✅ Done')}</div><div id="tp"></div>`;
+  if(openTask)loadComments();
+}
+function showTask(id,title){openTask=id;$('#tp').innerHTML=`<div class="card"><h3>💬 ${title}</h3><div id="cm"></div><input id="cb" placeholder="Write a comment…" onkeydown="if(event.key==='Enter')run(async()=>{await api('/tasks/${id}/comments','POST',{body:this.value});this.value=''})"></div>`;loadComments()}
+async function loadComments(){const cs=await api('/tasks/'+openTask+'/comments');const el=$('#cm');if(el)el.innerHTML=cs.map(c=>`<div class="c"><b>@${esc(c.username)}</b> ${esc(c.body)} <small>${esc(c.created)}</small></div>`).join('')||'<small>No comments yet.</small>'}
+renderAuth();connect();show('projects');
+</script></body></html>

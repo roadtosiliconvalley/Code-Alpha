@@ -1,0 +1,35 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Mini Social</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f0f2f5;color:#222}
+header{background:#7c3aed;color:#fff;padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}header h1{font-size:20px;margin:0;flex:1;cursor:pointer}
+button{background:#7c3aed;color:#fff;border:0;padding:6px 12px;border-radius:6px;cursor:pointer}button.alt{background:#64748b}header button{background:#fff;color:#7c3aed}
+main{max-width:600px;margin:20px auto;padding:0 12px}.card{background:#fff;border-radius:10px;padding:14px;margin-bottom:12px;box-shadow:0 1px 4px #0002}
+input,textarea{padding:8px;border:1px solid #ccc;border-radius:6px;width:100%;margin:4px 0;font:inherit}
+.u{font-weight:600;color:#7c3aed;cursor:pointer}small{color:#777}.c{padding:4px 0 4px 10px;border-left:3px solid #ddd;margin:4px 0}.err{color:#b91c1c}
+</style></head><body>
+<header><h1 onclick="show('feed')">💬 Mini Social</h1><span id="auth"></span></header><main id="app"></main>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let me=JSON.parse(localStorage.me||'null'),mode='all',view=['feed'];
+async function api(p,m='GET',b){const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json',...(me&&{Authorization:'Bearer '+me.token})},body:b&&JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');return d}
+function renderAuth(){$('#auth').innerHTML=me?`<button onclick="show('profile','${me.username}')">@${esc(me.username)}</button> <button onclick="logout()">Logout</button>`:`<button onclick="show('login')">Login / Register</button>`}
+function logout(){me=null;delete localStorage.me;renderAuth();show('feed')}
+async function login(kind){try{me=await api('/'+kind,'POST',{username:$('#u').value,password:$('#p').value});localStorage.me=JSON.stringify(me);renderAuth();show('feed')}catch(e){$('#msg').textContent=e.message}}
+const act=async(fn)=>{try{await fn();show(...view)}catch(e){alert(e.message);if(e.message.includes('log in'))show('login')}};
+const post=p=>`<div class="card"><span class="u" onclick="show('profile','${esc(p.username)}')">@${esc(p.username)}</span> <small>${esc(p.created)}</small><p>${esc(p.body)}</p>
+<button class="${p.liked?'':'alt'}" onclick="act(()=>api('/posts/${p.id}/like','POST'))">♥ ${p.likes}</button>
+${p.comments.map(c=>`<div class="c"><b>@${esc(c.username)}</b> ${esc(c.body)}</div>`).join('')}
+<input id="c${p.id}" placeholder="Write a comment…" onkeydown="if(event.key==='Enter')act(()=>api('/posts/${p.id}/comments','POST',{body:this.value}))"></div>`;
+async function show(v,arg){
+  view=[v,arg];const app=$('#app');
+  if(v==='feed'){const posts=await api('/feed?mode='+(me?mode:'all'));
+    app.innerHTML=(me?`<div class="card"><textarea id="nb" maxlength="280" placeholder="What's happening?"></textarea><button onclick="act(async()=>{await api('/posts','POST',{body:$('#nb').value})})">Post</button>
+    <button class="${mode=='all'?'':'alt'}" onclick="mode='all';show('feed')">Explore</button> <button class="${mode=='following'?'':'alt'}" onclick="mode='following';show('feed')">Following</button></div>`:'')+(posts.map(post).join('')||'<p>No posts yet.</p>')}
+  else if(v==='profile'){const u=await api('/users/'+arg);const own=me&&me.username===u.username;
+    app.innerHTML=`<div class="card"><h2>@${esc(u.username)}</h2><p>${esc(u.bio||'No bio yet.')}</p><p><b>${u.followers}</b> followers · <b>${u.following}</b> following</p>
+    ${own?`<input id="bio" placeholder="Update bio" maxlength="160"><button onclick="act(()=>api('/me','PUT',{bio:$('#bio').value}))">Save bio</button>`:`<button onclick="act(()=>api('/users/${esc(u.username)}/follow','POST'))">${u.isFollowing?'Unfollow':'Follow'}</button>`}</div>`+u.posts.map(post).join('')}
+  else if(v==='login'){app.innerHTML=`<div class="card"><h2>Account</h2><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password (6+ chars)"><button onclick="login('login')">Login</button> <button class="alt" onclick="login('register')">Register</button><p id="msg" class="err"></p></div>`}
+}
+renderAuth();show('feed');
+</script></body></html>

@@ -1,0 +1,88 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meetly</title>
+<script src="/socket.io/socket.io.js"></script>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#0f172a;color:#e2e8f0}
+header{background:#1e293b;padding:10px 16px;display:flex;gap:8px;align-items:center;flex-wrap:wrap}header h1{font-size:18px;margin:0;flex:1}
+button{background:#2563eb;color:#fff;border:0;padding:7px 12px;border-radius:6px;cursor:pointer}button.alt{background:#475569}button.red{background:#dc2626}
+input{padding:8px;border:1px solid #475569;background:#1e293b;color:#fff;border-radius:6px;margin:4px 0;width:100%}
+.box{max-width:340px;margin:60px auto;background:#1e293b;padding:20px;border-radius:10px}
+#grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;padding:8px}
+.tile{position:relative;background:#000;border-radius:8px;overflow:hidden}.tile video{width:100%;display:block;max-height:40vh;object-fit:contain}
+.tile span{position:absolute;left:8px;bottom:6px;background:#0008;padding:2px 8px;border-radius:4px;font-size:13px}
+#side{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:8px;padding:8px}
+.panel{background:#1e293b;border-radius:8px;padding:10px}canvas{background:#fff;width:100%;border-radius:6px;touch-action:none;cursor:crosshair}
+a{color:#93c5fd}.err{color:#fca5a5}
+</style></head><body>
+<div id="login" class="box"><h2>🎥 Meetly</h2><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password (6+ chars)">
+<button onclick="login('login')">Login</button> <button class="alt" onclick="login('register')">Register</button><p id="msg" class="err"></p></div>
+<div id="join" class="box" hidden><h3>Join a meeting</h3><input id="room" placeholder="Room name (e.g. team-standup)"><button onclick="start()">Join</button><p id="msg2" class="err"></p></div>
+<div id="meet" hidden>
+<header><h1>Room: <span id="rn"></span></h1><button class="alt" id="mic" onclick="toggle('audio',this)">🎤 Mute</button><button class="alt" id="cam" onclick="toggle('video',this)">📷 Camera off</button>
+<button onclick="shareScreen()">🖥 Share screen</button><label class="alt" style="background:#475569;padding:7px 12px;border-radius:6px;cursor:pointer">📎 Send file<input type="file" id="file" hidden onchange="sendFile(this.files[0]);this.value=''"></label><button class="red" onclick="location.reload()">Leave</button></header>
+<div id="grid"></div>
+<div id="side"><div class="panel"><b>Whiteboard</b> <button class="alt" onclick="clearBoard(true)">Clear</button> <input type="color" id="color" value="#111111" style="width:44px;padding:0"><canvas id="wb" width="800" height="450"></canvas></div>
+<div class="panel"><b>Shared files</b><div id="files"><small>Files sent peer-to-peer appear here.</small></div><p><small>🔒 Media and files travel directly between participants, encrypted with DTLS-SRTP. Sign-in uses hashed passwords + JWT.</small></p></div></div></div>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let me,socket,local,camTrack,peers={};
+const ICE={iceServers:[{urls:'stun:stun.l.google.com:19302'}]};
+async function login(kind){
+  const r=await fetch('/api/'+kind,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:$('#u').value,password:$('#p').value})});
+  const d=await r.json();if(!r.ok)return $('#msg').textContent=d.error;me=d;$('#login').hidden=true;$('#join').hidden=false;
+}
+function tile(id,name,stream,muted){let t=document.getElementById('t'+id);
+  if(!t){t=document.createElement('div');t.className='tile';t.id='t'+id;t.innerHTML=`<video autoplay playsinline ${muted?'muted':''}></video><span>${esc(name)}</span>`;$('#grid').append(t)}
+  if(stream)t.querySelector('video').srcObject=stream}
+async function start(){
+  const room=$('#room').value.trim();if(!room)return;
+  try{local=await navigator.mediaDevices.getUserMedia({video:true,audio:true})}catch(e){return $('#msg2').textContent='Camera/mic access needed (use https or localhost): '+e.message}
+  camTrack=local.getVideoTracks()[0];
+  $('#join').hidden=true;$('#meet').hidden=false;$('#rn').textContent=room;tile('me',me.username+' (you)',local,true);
+  socket=io({auth:{token:me.token}});socket.emit('join',room);
+  socket.on('peers',list=>list.forEach(p=>makePeer(p.id,p.name,true)));
+  socket.on('signal',({from,name,data})=>{if(!peers[from])makePeer(from,name,false);const p=peers[from];p.q=p.q.then(()=>handle(p,from,data)).catch(console.error)});
+  socket.on('left',id=>{peers[id]&&peers[id].pc.close();delete peers[id];document.getElementById('t'+id)?.remove()});
+  socket.on('draw',d=>drawLine(d.x0,d.y0,d.x1,d.y1,d.c));socket.on('clear',()=>clearBoard(false));
+}
+function makePeer(id,name,initiator){
+  const pc=new RTCPeerConnection(ICE),p=peers[id]={pc,q:Promise.resolve(),name};
+  local.getTracks().forEach(t=>pc.addTrack(t,local));
+  pc.onicecandidate=e=>e.candidate&&socket.emit('signal',{to:id,data:{candidate:e.candidate}});
+  pc.ontrack=e=>tile(id,name,e.streams[0]);
+  if(initiator){setupDC(p,pc.createDataChannel('files'));pc.createOffer().then(o=>pc.setLocalDescription(o)).then(()=>socket.emit('signal',{to:id,data:{sdp:pc.localDescription}}))}
+  else pc.ondatachannel=e=>setupDC(p,e.channel);
+}
+async function handle(p,from,data){
+  if(data.sdp){await p.pc.setRemoteDescription(data.sdp);
+    if(data.sdp.type==='offer'){await p.pc.setLocalDescription(await p.pc.createAnswer());socket.emit('signal',{to:from,data:{sdp:p.pc.localDescription}})}}
+  else if(data.candidate)await p.pc.addIceCandidate(data.candidate);
+}
+function toggle(kind,btn){const t=(kind==='audio'?local.getAudioTracks():local.getVideoTracks())[0];if(!t)return;t.enabled=!t.enabled;
+  btn.textContent=kind==='audio'?(t.enabled?'🎤 Mute':'🎤 Unmute'):(t.enabled?'📷 Camera off':'📷 Camera on')}
+async function shareScreen(){
+  try{const s=await navigator.mediaDevices.getDisplayMedia({video:true});const t=s.getVideoTracks()[0];
+    const swap=track=>Object.values(peers).forEach(p=>p.pc.getSenders().find(x=>x.track&&x.track.kind==='video')?.replaceTrack(track));
+    swap(t);tile('me',me.username+' (screen)',s,true);
+    t.onended=()=>{swap(camTrack);tile('me',me.username+' (you)',local,true)}}catch(e){}
+}
+// ---- file sharing over WebRTC data channels (chunked) ----
+function setupDC(p,dc){p.dc=dc;dc.binaryType='arraybuffer';let meta,chunks=[],got=0;
+  dc.onmessage=e=>{
+    if(typeof e.data==='string'){meta=JSON.parse(e.data);chunks=[];got=0;return}
+    chunks.push(e.data);got+=e.data.byteLength;
+    if(got>=meta.size){const url=URL.createObjectURL(new Blob(chunks));addFile(`${esc(p.name)} sent <a href="${url}" download="${esc(meta.name)}">${esc(meta.name)}</a> (${(meta.size/1024).toFixed(1)} KB)`)}}}
+function addFile(h){const d=document.createElement('div');d.innerHTML='📄 '+h;$('#files').append(d)}
+async function sendFile(f){if(!f)return;
+  for(const p of Object.values(peers)){if(!p.dc||p.dc.readyState!=='open')continue;
+    p.dc.send(JSON.stringify({name:f.name,size:f.size}));const buf=await f.arrayBuffer();
+    for(let i=0;i<buf.byteLength;i+=16384){while(p.dc.bufferedAmount>1e6)await new Promise(r=>setTimeout(r,50));p.dc.send(buf.slice(i,i+16384))}}
+  addFile(`You sent ${esc(f.name)}`)}
+// ---- whiteboard ----
+const cv=$('#wb'),cx=cv.getContext('2d');let drawing=false,last;
+function drawLine(x0,y0,x1,y1,c){cx.strokeStyle=c;cx.lineWidth=3;cx.lineCap='round';cx.beginPath();cx.moveTo(x0*cv.width,y0*cv.height);cx.lineTo(x1*cv.width,y1*cv.height);cx.stroke()}
+function pos(e){const r=cv.getBoundingClientRect();return[(e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height]}
+cv.onpointerdown=e=>{drawing=true;last=pos(e)};cv.onpointerup=cv.onpointerleave=()=>drawing=false;
+cv.onpointermove=e=>{if(!drawing)return;const n=pos(e),c=$('#color').value;drawLine(...last,...n,c);socket.emit('draw',{x0:last[0],y0:last[1],x1:n[0],y1:n[1],c});last=n};
+function clearBoard(emit){cx.clearRect(0,0,cv.width,cv.height);if(emit)socket.emit('clear')}
+</script></body></html>

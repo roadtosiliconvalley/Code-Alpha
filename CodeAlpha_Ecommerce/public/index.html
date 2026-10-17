@@ -1,0 +1,48 @@
+<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ShopEasy</title>
+<style>
+*{box-sizing:border-box}body{font-family:system-ui,sans-serif;margin:0;background:#f5f6fa;color:#222}
+header{background:#1e293b;color:#fff;padding:12px 20px;display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+header h1{font-size:20px;margin:0;flex:1;cursor:pointer}
+button{background:#2563eb;color:#fff;border:0;padding:8px 14px;border-radius:6px;cursor:pointer}button.alt{background:#64748b}
+main{max-width:960px;margin:20px auto;padding:0 16px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:16px}
+.card{background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px #0002}.emoji{font-size:56px;text-align:center}
+input{padding:8px;border:1px solid #ccc;border-radius:6px;width:100%;margin:4px 0}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid #eee}
+.err{color:#b91c1c}
+</style></head><body>
+<header><h1 onclick="show('home')">🛒 ShopEasy</h1><button class="alt" onclick="show('cart')">Cart (<span id="cc">0</span>)</button><span id="auth"></span></header>
+<main id="app"></main>
+<script>
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let me=JSON.parse(localStorage.me||'null'),cart=JSON.parse(localStorage.cart||'{}'),products=[];
+async function api(p,m='GET',b){const r=await fetch('/api'+p,{method:m,headers:{'Content-Type':'application/json',...(me&&{Authorization:'Bearer '+me.token})},body:b&&JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.error||'Error');return d}
+function saveCart(){localStorage.cart=JSON.stringify(cart);$('#cc').textContent=Object.values(cart).reduce((a,b)=>a+b,0)}
+function renderAuth(){$('#auth').innerHTML=me?`Hi ${esc(me.username)} <button class="alt" onclick="show('orders')">Orders</button> <button class="alt" onclick="logout()">Logout</button>`:`<button onclick="show('login')">Login / Register</button>`}
+function logout(){me=null;delete localStorage.me;renderAuth();show('home')}
+function add(id){cart[id]=(cart[id]||0)+1;saveCart()}
+function setQty(id,q){q=parseInt(q);if(q>0)cart[id]=q;else delete cart[id];saveCart();show('cart')}
+async function login(kind){
+  try{me=await api('/'+kind,'POST',{username:$('#u').value,password:$('#p').value});localStorage.me=JSON.stringify(me);renderAuth();show('home')}
+  catch(e){$('#msg').textContent=e.message}
+}
+async function checkout(){
+  if(!me)return show('login');
+  try{const r=await api('/orders','POST',{items:Object.entries(cart).map(([id,qty])=>({id:+id,qty})),address:$('#addr').value});
+    cart={};saveCart();$('#app').innerHTML=`<div class="card"><h2>✅ Order #${r.orderId} placed!</h2><p>Thank you for shopping with us.</p><button onclick="show('orders')">View orders</button></div>`}
+  catch(e){$('#msg').textContent=e.message}
+}
+async function show(v,id){
+  const app=$('#app');
+  if(!products.length)products=await api('/products');
+  if(v==='home'){products=await api('/products');app.innerHTML='<div class="grid">'+products.map(p=>`<div class="card"><div class="emoji">${esc(p.image)}</div><h3>${esc(p.name)}</h3><p>KES ${p.price}</p><button onclick="show('product',${p.id})">Details</button> <button onclick="add(${p.id})">Add</button></div>`).join('')+'</div>'}
+  else if(v==='product'){const p=await api('/products/'+id);app.innerHTML=`<div class="card"><div class="emoji">${esc(p.image)}</div><h2>${esc(p.name)}</h2><p>${esc(p.description)}</p><h3>KES ${p.price}</h3><p>${p.stock} in stock</p><button onclick="add(${p.id})">Add to cart</button> <button class="alt" onclick="show('home')">Back</button></div>`}
+  else if(v==='cart'){
+    const ids=Object.keys(cart);let total=0;
+    app.innerHTML=`<div class="card"><h2>Your cart</h2>`+(ids.length?ids.map(i=>{const p=products.find(x=>x.id==i);if(!p)return'';total+=p.price*cart[i];return`<div class="row"><span>${esc(p.image)} ${esc(p.name)}</span><span><input type="number" min="0" value="${cart[i]}" style="width:70px" onchange="setQty(${i},this.value)"> KES ${p.price*cart[i]}</span></div>`}).join('')+`<h3>Total: KES ${total}</h3><input id="addr" placeholder="Delivery address"><button onclick="checkout()">Place order</button><p id="msg" class="err"></p>`:'<p>Cart is empty.</p>')+'</div>'}
+  else if(v==='login'){app.innerHTML=`<div class="card" style="max-width:340px;margin:auto"><h2>Account</h2><input id="u" placeholder="Username"><input id="p" type="password" placeholder="Password (6+ chars)"><button onclick="login('login')">Login</button> <button class="alt" onclick="login('register')">Register</button><p id="msg" class="err"></p></div>`}
+  else if(v==='orders'){const os=await api('/orders');app.innerHTML='<h2>My orders</h2>'+(os.map(o=>`<div class="card" style="margin-bottom:12px"><b>Order #${o.id}</b> — ${esc(o.status)} — KES ${o.total}<br><small>${esc(o.created)} · ${esc(o.address)}</small>${o.items.map(i=>`<div class="row"><span>${esc(i.name)} × ${i.qty}</span><span>KES ${i.price*i.qty}</span></div>`).join('')}</div>`).join('')||'<p>No orders yet.</p>')}
+}
+renderAuth();saveCart();show('home');
+</script></body></html>
